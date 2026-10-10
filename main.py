@@ -258,7 +258,14 @@ class MainWindow(QMainWindow):
     def _show_devices(self):
         self.device_list.clear()
         for device in self.devices:
-            self.device_list.addItem(f"{device.name}  ·  {getattr(device, 'type', 'RGB')}")
+            zones = list(getattr(device, "zones", []) or [])
+            self.device_list.addItem(
+                f"{device.name}  ·  {getattr(device, 'type', 'RGB')}  ·  зон: {len(zones)}"
+            )
+            for zone in zones:
+                zone_name = getattr(zone, "name", "RGB-зона")
+                led_count = len(getattr(zone, "leds", []) or [])
+                self.device_list.addItem(f"   └ {zone_name} ({led_count} LED)")
 
     def on_effect_changed(self, _):
         self.last_rgb = None
@@ -268,28 +275,58 @@ class MainWindow(QMainWindow):
             return
         mode = self.effect.currentText()
         t = time.monotonic()
+        # Avoid flooding the SDK with updates; many controllers need a small delay.
+        if t - getattr(self, "_last_rgb_update", 0.0) < 0.12:
+            return
+
         if mode == "Bass Pulse":
             brightness = max(0.06, self.bass)
-            hue = int((t * 50) % 360)
+            base_hue = int((t * 50) % 360)
         elif mode == "Rainbow":
             brightness = max(0.12, self.level)
-            hue = int((t * 90) % 360)
+            base_hue = int((t * 90) % 360)
         else:
             brightness = max(0.05, self.level * 0.85 + self.bass * 0.4)
-            hue = int((t * 45 + self.level * 180) % 360)
-        color = QColor.fromHsv(hue, 240, int(max(0.04, min(1.0, brightness)) * 255))
-        rgb = (color.red(), color.green(), color.blue())
-        if rgb == self.last_rgb:
+            base_hue = int((t * 45 + self.level * 180) % 360)
+
+        brightness = max(0.04, min(1.0, brightness))
+        signature = (mode, int(base_hue / 3), int(brightness * 30))
+        if signature == self.last_rgb:
             return
-        self.last_rgb = rgb
+        self.last_rgb = signature
+        self._last_rgb_update = t
+
         try:
-            rgb_color = RGBColor(*rgb)
             for device in self.devices:
-                try:
-                    device.set_color(rgb_color)
-                except Exception:
-                    # Some devices expose zones/LEDs differently; skip unsupported device.
-                    continue
+                zones = list(getattr(device, "zones", []) or [])
+                if zones:
+                    # Addressable headers are often exposed as zones, not as
+                    # separate devices. Apply colors to every reported zone.
+                    for zone in zones:
+                        try:
+                            leds = list(getattr(zone, "leds", []) or [])
+                            if len(leds) > 1:
+                                colors = []
+                                for i in range(len(leds)):
+                                    hue = (base_hue + int(i * 360 / len(leds))) % 360
+                                    wave = 0.72 + 0.28 * math.sin(i * 0.55 + t * 5.0)
+                                    value = int(max(0.04, min(1.0, brightness * wave)) * 255)
+                                    c = QColor.fromHsv(hue, 240, value)
+                                    colors.append(RGBColor(c.red(), c.green(), c.blue()))
+                                zone.set_colors(colors, fast=True)
+                            else:
+                                c = QColor.fromHsv(base_hue, 240, int(brightness * 255))
+                                zone.set_color(RGBColor(c.red(), c.green(), c.blue()), fast=True)
+                        except Exception:
+                            # Some zones may be read-only or unsupported by the controller.
+                            continue
+                else:
+                    # Fallback for devices that expose no zones.
+                    try:
+                        c = QColor.fromHsv(base_hue, 240, int(brightness * 255))
+                        device.set_color(RGBColor(c.red(), c.green(), c.blue()))
+                    except Exception:
+                        continue
         except Exception as exc:
             self.rgb_status.setText(f"Ошибка управления RGB: {exc}")
 
