@@ -225,7 +225,7 @@ class MainWindow(QMainWindow):
 
     def connect_rgb(self):
         try:
-            self.client = OpenRGBClient(SDK_HOST, SDK_PORT, name=APP_NAME, timeout=2)
+            self.client = OpenRGBClient(SDK_HOST, SDK_PORT, name=APP_NAME)
             self.devices = list(self.client.devices)
             self._show_devices()
             self.rgb_status.setText(f"Подключено устройств: {len(self.devices)}")
